@@ -1,4 +1,12 @@
-const socket = io();
+const socket = io({
+    transports: ['websocket', 'polling'], // Fallback to polling if WebSockets fail
+    reconnection: true,                  // Enable auto-reconnection
+    reconnectionAttempts: 10,            // Number of attempts before giving up
+    reconnectionDelay: 1000,             // How long to wait before first attempt (1s)
+    reconnectionDelayMax: 5000,          // Maximum delay between attempts (5s)
+    timeout: 20000                        // Connection timeout (20s)
+});
+
 let currentUser = null;
 let currentProject = null;
 let isRegisterMode = false;
@@ -8,6 +16,58 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // --- REAL-TIME SOCKET LISTENERS ---
+
+// --- SOCKET LIFECYCLE HANDLERS ---
+
+// Fired when successfully connected (or re-connected)
+socket.on('connect', () => {
+    console.log('⚡ Socket connected:', socket.id);
+
+    // 1. Re-authenticate active user session if present
+    if (currentUser && currentUser._id) {
+        socket.emit('user_login', currentUser._id);
+    }
+
+    // 2. Re-join current active project room
+    if (currentProject && currentProject._id) {
+        socket.emit('join_project', currentProject._id);
+        // Refresh board to fetch any updates missed while offline
+        loadBoard(currentProject._id);
+    }
+});
+
+// Fired when disconnected (e.g., server restart or network failure)
+socket.on('disconnect', (reason) => {
+    console.warn('⚠️ Socket disconnected:', reason);
+
+    if (reason === 'io server disconnect') {
+        // Disconnected manually by the server -> reconnect manually
+        socket.connect();
+    } else {
+        // Disconnected due to network issues -> auto-reconnect will kick in
+        showToast('Lost connection to server. Reconnecting...');
+    }
+});
+
+// Fired on each reconnection attempt
+socket.io.on('reconnect_attempt', (attempt) => {
+    console.log(`🔄 Attempting to reconnect (${attempt})...`);
+});
+
+// Fired when reconnection is successful
+socket.io.on('reconnect', (attemptNumber) => {
+    showToast('🟢 Reconnected to server!');
+});
+
+// Fired if all reconnection attempts fail
+socket.io.on('reconnect_failed', () => {
+    showToast('❌ Unable to reconnect to server. Please refresh the page.');
+});
+
+// Handle connection errors (e.g., 400 Bad Request polling errors)
+socket.on('connect_error', (error) => {
+    console.error('Socket Connection Error:', error.message);
+});
 
 socket.on('task_updated', (data) => {
     if (currentProject && currentProject._id === data.projectId) {
@@ -100,7 +160,7 @@ async function logout() {
 async function loadNotifications() {
     const res = await fetch('/api/notifications');
     const notifs = await res.json();
-    
+
     const unread = notifs.filter(n => !n.read).length;
     const badge = document.getElementById('notif-badge');
     if (badge) {
@@ -204,7 +264,7 @@ async function handleDeleteProject() {
         showToast('Project deleted successfully');
         const deletedId = currentProject._id;
         currentProject = null;
-        
+
         document.getElementById('kanban-board').style.display = 'none';
         document.getElementById('btn-invite-member').style.display = 'none';
         document.getElementById('btn-delete-project').style.display = 'none';
