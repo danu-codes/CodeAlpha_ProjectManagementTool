@@ -1,226 +1,221 @@
 const socket = io();
+
 let currentUser = null;
 let currentProject = null;
-let isRegisterMode = false;
+let allProjects = [];
+let activeTasks = [];
 
-document.addEventListener('DOMContentLoaded', () => {
-    checkSession();
-});
+// --- INITIALIZATION ---
+window.onload = async () => {
+    await loadUsers();
+    await loadProjects();
+};
 
-// Socket.io Real-time Event Listeners
-socket.on('task_updated', (data) => {
-    if (currentProject && currentProject._id === data.projectId) {
-        loadBoard(data.projectId);
-        showToast(`Real-time update: Task ${data.action}`);
-    }
-});
+// --- AUTHENTICATION ---
+async function loginUser() {
+    const username = document.getElementById('username-input').value.trim();
+    const email = document.getElementById('email-input').value.trim();
 
-async function checkSession() {
-    const res = await fetch('/api/session');
-    const data = await res.json();
-    const navActions = document.getElementById('nav-actions');
+    if (!username || !email) return alert('Enter username and email');
 
-    if (data.loggedIn) {
-        currentUser = data.user;
-        navActions.innerHTML = `
-            <span style="margin-right:1rem; font-weight:600;"><i class="fa-solid fa-user"></i> ${currentUser.username}</span>
-            <button class="btn btn-primary" onclick="logout()">Logout</button>
-        `;
-        closeModal('auth-modal');
-        loadProjects();
-    } else {
-        openModal('auth-modal');
-    }
+    const res = await fetch('/api/users/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, email })
+    });
+    
+    currentUser = await res.json();
+    document.getElementById('user-display').innerHTML = `Logged in as: <strong>${currentUser.username}</strong>`;
+    document.getElementById('auth-section').style.display = 'none';
+    
+    await loadUsers();
+}
+
+// --- USER & PROJECT DATA ---
+async function loadUsers() {
+    const res = await fetch('/api/users');
+    const users = await res.json();
+
+    const userSelect = document.getElementById('user-select');
+    userSelect.innerHTML = '<option value="">Select User to Add...</option>';
+    
+    users.forEach(u => {
+        const opt = document.createElement('option');
+        opt.value = u._id;
+        opt.textContent = `${u.username} (${u.email})`;
+        userSelect.appendChild(opt);
+    });
 }
 
 async function loadProjects() {
     const res = await fetch('/api/projects');
-    const projects = await res.json();
-    const list = document.getElementById('projects-list');
-
-    list.innerHTML = projects.map(p => `
-        <li class="project-item ${currentProject && currentProject._id === p._id ? 'active' : ''}" onclick="selectProject('${p._id}')">
-            <i class="fa-solid fa-folder"></i> ${p.title}
-        </li>
-    `).join('');
-
-    if (projects.length > 0 && !currentProject) {
-        selectProject(projects[0]._id);
-    }
+    allProjects = await res.json();
+    renderProjectsList();
 }
 
-async function selectProject(id) {
-    const res = await fetch(`/api/projects/${id}`);
-    currentProject = await res.json();
+function renderProjectsList() {
+    const container = document.getElementById('projects-list');
+    container.innerHTML = '';
 
-    document.getElementById('current-project-title').innerText = currentProject.title;
-    document.getElementById('kanban-board').style.display = 'grid';
-
-    // Connect user socket to the project's real-time room
-    socket.emit('join_project', currentProject._id);
-
-    loadProjects();
-    loadBoard(id);
-}
-
-async function loadBoard(projectId) {
-    const res = await fetch(`/api/projects/${projectId}/tasks`);
-    const tasks = await res.json();
-
-    const cols = { todo: [], in_progress: [], done: [] };
-    tasks.forEach(t => cols[t.status].push(t));
-
-    ['todo', 'in_progress', 'done'].forEach(status => {
-        const colEl = document.getElementById(`col-${status}`);
-        colEl.innerHTML = cols[status].map(t => `
-            <div class="task-card" onclick="openTaskDetail('${t._id}')">
-                <div style="font-weight:700; margin-bottom:0.4rem;">${t.title}</div>
-                <div class="task-footer">
-                    <span><i class="fa-solid fa-user-tag"></i> ${t.assignee ? t.assignee.username : 'Unassigned'}</span>
-                    <span><i class="fa-regular fa-comments"></i> ${t.comments.length}</span>
-                </div>
-            </div>
-        `).join('');
+    allProjects.forEach(p => {
+        const div = document.createElement('div');
+        div.className = 'project-item';
+        div.textContent = p.name;
+        div.onclick = () => selectProject(p._id);
+        container.appendChild(div);
     });
 }
 
-function openCreateTaskModal(status) {
-    document.getElementById('task-status-input').value = status;
-    const select = document.getElementById('task-assignee-select');
-    select.innerHTML = `<option value="">Unassigned</option>` + currentProject.members.map(m => `
-        <option value="${m._id}">${m.username}</option>
-    `).join('');
-    openModal('create-task-modal');
+async function createProject() {
+    const name = document.getElementById('new-project-name').value.trim();
+    if (!name) return alert('Enter project name');
+    if (!currentUser) return alert('Please log in first');
+
+    await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, userId: currentUser._id })
+    });
+
+    document.getElementById('new-project-name').value = '';
 }
 
-async function handleCreateTask(e) {
-    e.preventDefault();
-    const title = document.getElementById('task-title-input').value;
-    const status = document.getElementById('task-status-input').value;
-    const assignee = document.getElementById('task-assignee-select').value;
+async function selectProject(projectId) {
+    currentProject = allProjects.find(p => p._id === projectId);
+    
+    document.getElementById('active-project-card').style.display = 'block';
+    document.getElementById('task-form-card').style.display = 'block';
+    document.getElementById('kanban-board').style.display = 'grid';
+    document.getElementById('current-project-title').textContent = currentProject.name;
+
+    renderMembers();
+    populateAssigneeDropdown();
+    await loadTasks();
+}
+
+function renderMembers() {
+    const container = document.getElementById('project-members-badges');
+    container.innerHTML = currentProject.members
+        .map(m => `<span class="badge">👤 ${m.username}</span>`)
+        .join('');
+}
+
+function populateAssigneeDropdown() {
+    const select = document.getElementById('task-assignee');
+    select.innerHTML = '<option value="">Assign To...</option>';
+    currentProject.members.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m._id;
+        opt.textContent = m.username;
+        select.appendChild(opt);
+    });
+}
+
+async function addMemberToProject() {
+    const userId = document.getElementById('user-select').value;
+    if (!userId || !currentProject) return alert('Select a user first');
+
+    await fetch(`/api/projects/${currentProject._id}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId })
+    });
+}
+
+// --- TASK MANAGEMENT ---
+async function loadTasks() {
+    if (!currentProject) return;
+    const res = await fetch(`/api/projects/${currentProject._id}/tasks`);
+    activeTasks = await res.json();
+    renderTasks();
+}
+
+async function createTask() {
+    const title = document.getElementById('task-title').value.trim();
+    const assignedTo = document.getElementById('task-assignee').value;
+
+    if (!title || !currentProject) return alert('Task title required');
 
     await fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: currentProject._id, title, status, assignee })
+        body: JSON.stringify({
+            title,
+            projectId: currentProject._id,
+            assignedTo: assignedTo || null
+        })
     });
 
-    closeModal('create-task-modal');
-    document.getElementById('task-title-input').value = '';
-    loadBoard(currentProject._id);
+    document.getElementById('task-title').value = '';
 }
 
-async function handleCreateProject(e) {
-    e.preventDefault();
-    const title = document.getElementById('project-name-input').value;
-    const res = await fetch('/api/projects', {
-        method: 'POST',
+async function updateTaskStatus(taskId, newStatus) {
+    await fetch(`/api/tasks/${taskId}`, {
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title })
+        body: JSON.stringify({ status: newStatus })
     });
-    const newProj = await res.json();
-    closeModal('create-project-modal');
-    document.getElementById('project-name-input').value = '';
-    selectProject(newProj._id);
 }
 
-async function openTaskDetail(taskId) {
-    const res = await fetch(`/api/tasks/${taskId}`);
-    const task = await res.json();
+function renderTasks() {
+    const todoList = document.getElementById('todo-list');
+    const inProgressList = document.getElementById('inprogress-list');
+    const doneList = document.getElementById('done-list');
 
-    const container = document.getElementById('task-detail-content');
-    container.innerHTML = `
-        <h3 style="margin-bottom:1rem;">${task.title}</h3>
-        <div class="input-group">
-            <label>Move Status</label>
-            <select onchange="updateTaskStatus('${task._id}', this.value)">
-                <option value="todo" ${task.status === 'todo' ? 'selected' : ''}>To Do</option>
-                <option value="in_progress" ${task.status === 'in_progress' ? 'selected' : ''}>In Progress</option>
-                <option value="done" ${task.status === 'done' ? 'selected' : ''}>Done</option>
-            </select>
-        </div>
-        <hr style="margin: 1rem 0; border: none; border-top: 1px solid var(--border);">
-        <h4 style="margin-bottom:0.5rem;">Comments</h4>
-        <div style="max-height: 200px; overflow-y: auto; margin-bottom: 1rem;">
-            ${task.comments.map(c => `
-                <div class="comment-box">
-                    <div class="comment-header">${c.username}</div>
-                    <div>${c.text}</div>
-                </div>
-            `).join('')}
-        </div>
-        <form onsubmit="postComment(event, '${task._id}')">
-            <div class="input-group">
-                <input type="text" id="comment-text" placeholder="Write a comment..." required>
+    todoList.innerHTML = '';
+    inProgressList.innerHTML = '';
+    doneList.innerHTML = '';
+
+    activeTasks.forEach(task => {
+        const card = document.createElement('div');
+        card.className = 'task-card';
+        
+        const assignee = task.assignedTo ? task.assignedTo.username : 'Unassigned';
+        card.innerHTML = `
+            <strong>${task.title}</strong>
+            <small>Assigned to: ${assignee}</small>
+            <div class="status-actions">
+                ${task.status !== 'To Do' ? `<button onclick="updateTaskStatus('${task._id}', 'To Do')">← To Do</button>` : ''}
+                ${task.status !== 'In Progress' ? `<button onclick="updateTaskStatus('${task._id}', 'In Progress')">In Progress</button>` : ''}
+                ${task.status !== 'Done' ? `<button onclick="updateTaskStatus('${task._id}', 'Done')">Done →</button>` : ''}
             </div>
-            <button type="submit" class="btn btn-primary btn-block">Add Comment</button>
-        </form>
-    `;
-    openModal('task-detail-modal');
-}
+        `;
 
-async function updateTaskStatus(taskId, status) {
-    await fetch(`/api/tasks/${taskId}/status`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status })
+        if (task.status === 'To Do') todoList.appendChild(card);
+        else if (task.status === 'In Progress') inProgressList.appendChild(card);
+        else if (task.status === 'Done') doneList.appendChild(card);
     });
-    loadBoard(currentProject._id);
 }
 
-async function postComment(e, taskId) {
-    e.preventDefault();
-    const text = document.getElementById('comment-text').value;
-    await fetch(`/api/tasks/${taskId}/comments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text })
-    });
-    openTaskDetail(taskId);
-    loadBoard(currentProject._id);
-}
+// --- REAL-TIME SOCKET LISTENERS ---
+socket.on('project:created', (project) => {
+    allProjects.push(project);
+    renderProjectsList();
+});
 
-// Modal and Auth Utilities
-function openModal(id) { document.getElementById(id).classList.add('active'); }
-function closeModal(id) { document.getElementById(id).classList.remove('active'); }
-
-function toggleAuthMode() {
-    isRegisterMode = !isRegisterMode;
-    document.getElementById('auth-title').innerText = isRegisterMode ? 'Register Account' : 'Welcome to TaskFlow';
-    document.getElementById('auth-submit-btn').innerText = isRegisterMode ? 'Sign Up' : 'Log In';
-    document.getElementById('auth-toggle-btn').innerText = isRegisterMode ? 'Already registered? Log In' : 'New user? Register';
-}
-
-async function handleAuth(e) {
-    e.preventDefault();
-    const username = document.getElementById('auth-username').value;
-    const password = document.getElementById('auth-password').value;
-    const endpoint = isRegisterMode ? '/api/register' : '/api/login';
-
-    const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
-    });
-
-    if (res.ok) {
-        checkSession();
-    } else {
-        const err = await res.json();
-        showToast(err.error || 'Authentication error');
+socket.on('project:updated', (updatedProject) => {
+    const index = allProjects.findIndex(p => p._id === updatedProject._id);
+    if (index !== -1) allProjects[index] = updatedProject;
+    
+    if (currentProject && currentProject._id === updatedProject._id) {
+        currentProject = updatedProject;
+        renderMembers();
+        populateAssigneeDropdown();
     }
-}
+    renderProjectsList();
+});
 
-async function logout() {
-    await fetch('/api/logout', { method: 'POST' });
-    location.reload();
-}
+socket.on('task:created', (task) => {
+    if (currentProject && task.project === currentProject._id) {
+        activeTasks.push(task);
+        renderTasks();
+    }
+});
 
-function showToast(msg) {
-    const container = document.getElementById('toast-container');
-    const toast = document.createElement('div');
-    toast.className = 'toast';
-    toast.innerText = msg;
-    container.appendChild(toast);
-    setTimeout(() => toast.remove(), 2500);
-}
+socket.on('task:updated', (updatedTask) => {
+    if (currentProject && updatedTask.project === currentProject._id) {
+        const index = activeTasks.findIndex(t => t._id === updatedTask._id);
+        if (index !== -1) activeTasks[index] = updatedTask;
+        renderTasks();
+    }
+});

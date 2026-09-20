@@ -3,146 +3,97 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TaskFlow — CodeAlpha Task 3</title>
-    <link rel="stylesheet" href="styles.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <title>TaskFlow - Collaborative PM</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background: #f4f6f8; color: #333; padding: 20px; }
+        header { display: flex; justify-content: space-between; align-items: center; background: #fff; padding: 15px 25px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        .container { display: grid; grid-template-columns: 300px 1fr; gap: 20px; }
+        .card { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        input, select, button { width: 100%; padding: 10px; margin-top: 8px; margin-bottom: 12px; border: 1px solid #ccc; border-radius: 4px; }
+        button { background: #0066fe; color: #fff; border: none; font-weight: bold; cursor: pointer; }
+        button:hover { background: #0052cc; }
+        ul { list-style: none; }
+        .project-item { padding: 10px; background: #f9f9f9; border-radius: 4px; margin-bottom: 8px; cursor: pointer; border-left: 4px solid #0066fe; }
+        .kanban-board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
+        .column { background: #ebecf0; padding: 15px; border-radius: 8px; min-height: 400px; }
+        .column h3 { margin-bottom: 15px; color: #5e6c84; font-size: 14px; text-transform: uppercase; }
+        .task-card { background: #fff; padding: 12px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 10px; }
+        .task-card small { display: block; color: #6b778c; margin-top: 6px; font-size: 12px; }
+        .status-actions { display: flex; gap: 5px; margin-top: 8px; }
+        .status-actions button { padding: 4px 8px; font-size: 11px; margin: 0; }
+        .badge { display: inline-block; background: #e0e0e0; padding: 2px 6px; border-radius: 10px; font-size: 11px; margin-right: 5px; }
+    </style>
 </head>
 <body>
-    <!-- Top Navbar -->
-    <header class="navbar">
-        <div class="nav-container">
-            <div class="brand">
-                <i class="fa-solid fa-list-check"></i>
-                <span>TaskFlow</span>
-            </div>
-            <div id="nav-actions">
-                <!-- Dynamically rendered -->
-            </div>
-        </div>
+
+    <header>
+        <h1>⚡ TaskFlow Workspace</h1>
+        <div id="user-display">Not logged in</div>
     </header>
 
-    <!-- App Layout -->
-    <div class="app-layout">
-        <!-- Sidebar Projects List -->
-        <aside class="sidebar">
-            <div class="sidebar-header">
-                <h3>Projects</h3>
-                <button class="btn btn-sm btn-primary" id="btn-add-project" onclick="openModal('create-project-modal')">+ New</button>
+    <div class="container">
+        <!-- Sidebar -->
+        <aside>
+            <!-- User Login/Register -->
+            <div class="card" id="auth-section">
+                <h3>User Login</h3>
+                <input type="text" id="username-input" placeholder="Username">
+                <input type="email" id="email-input" placeholder="Email Address">
+                <button onclick="loginUser()">Log In / Register</button>
             </div>
-            <ul id="projects-list" class="projects-list">
-                <!-- Loaded via JS -->
-            </ul>
+
+            <!-- Projects List -->
+            <div class="card">
+                <h3>Projects</h3>
+                <input type="text" id="new-project-name" placeholder="New Project Name">
+                <button onclick="createProject()">+ Create Project</button>
+                <div id="projects-list" style="margin-top: 15px;"></div>
+            </div>
         </aside>
 
-        <!-- Main Board Workspace -->
-        <main class="board-workspace">
-            <div class="board-header">
-                <h2 id="current-project-title">Select or Create a Project</h2>
-                <div id="project-members" class="members-pills"></div>
+        <!-- Main Workspace -->
+        <main>
+            <div id="active-project-card" class="card" style="display:none;">
+                <h2 id="current-project-title">Select a Project</h2>
+                <div style="margin-top: 10px;" id="members-container">
+                    <strong>Members:</strong> <span id="project-members-badges"></span>
+                </div>
+                
+                <!-- Add Member Form -->
+                <div style="display:flex; gap: 10px; margin-top: 15px;">
+                    <select id="user-select"><option value="">Select User to Add...</option></select>
+                    <button style="width: auto;" onclick="addMemberToProject()">Add Member</button>
+                </div>
+            </div>
+
+            <!-- Create Task Form -->
+            <div id="task-form-card" class="card" style="display:none;">
+                <h3>Add Task</h3>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                    <input type="text" id="task-title" placeholder="Task Title">
+                    <select id="task-assignee"><option value="">Assign To...</option></select>
+                </div>
+                <button onclick="createTask()">Create Task</button>
             </div>
 
             <!-- Kanban Columns -->
-            <div class="kanban-board" id="kanban-board" style="display: none;">
-                <!-- TODO Column -->
-                <div class="kanban-column">
-                    <div class="column-header todo">
-                        <span><i class="fa-regular fa-circle"></i> To Do</span>
-                        <button class="icon-btn" onclick="openCreateTaskModal('todo')"><i class="fa-solid fa-plus"></i></button>
-                    </div>
-                    <div class="task-list" id="col-todo"></div>
+            <div class="kanban-board" id="kanban-board" style="display:none;">
+                <div class="column">
+                    <h3>To Do</h3>
+                    <div id="todo-list"></div>
                 </div>
-
-                <!-- IN PROGRESS Column -->
-                <div class="kanban-column">
-                    <div class="column-header progress">
-                        <span><i class="fa-solid fa-spinner"></i> In Progress</span>
-                        <button class="icon-btn" onclick="openCreateTaskModal('in_progress')"><i class="fa-solid fa-plus"></i></button>
-                    </div>
-                    <div class="task-list" id="col-in_progress"></div>
+                <div class="column">
+                    <h3>In Progress</h3>
+                    <div id="inprogress-list"></div>
                 </div>
-
-                <!-- DONE Column -->
-                <div class="kanban-column">
-                    <div class="column-header done">
-                        <span><i class="fa-regular fa-circle-check"></i> Done</span>
-                        <button class="icon-btn" onclick="openCreateTaskModal('done')"><i class="fa-solid fa-plus"></i></button>
-                    </div>
-                    <div class="task-list" id="col-done"></div>
+                <div class="column">
+                    <h3>Done</h3>
+                    <div id="done-list"></div>
                 </div>
             </div>
         </main>
     </div>
-
-    <!-- Modals -->
-    <!-- Create Project Modal -->
-    <div class="modal-overlay" id="create-project-modal">
-        <div class="modal-card">
-            <button class="modal-close" onclick="closeModal('create-project-modal')">&times;</button>
-            <h3>Create Group Project</h3>
-            <form onsubmit="handleCreateProject(event)">
-                <div class="input-group">
-                    <label>Project Title</label>
-                    <input type="text" id="project-name-input" required placeholder="e.g. Website Redesign">
-                </div>
-                <button type="submit" class="btn btn-primary btn-block">Create Project</button>
-            </form>
-        </div>
-    </div>
-
-    <!-- Create Task Modal -->
-    <div class="modal-overlay" id="create-task-modal">
-        <div class="modal-card">
-            <button class="modal-close" onclick="closeModal('create-task-modal')">&times;</button>
-            <h3>Create Task</h3>
-            <form onsubmit="handleCreateTask(event)">
-                <input type="hidden" id="task-status-input">
-                <div class="input-group">
-                    <label>Task Title</label>
-                    <input type="text" id="task-title-input" required placeholder="e.g. Design Navbar UI">
-                </div>
-                <div class="input-group">
-                    <label>Assignee</label>
-                    <select id="task-assignee-select">
-                        <!-- Populated dynamically -->
-                    </select>
-                </div>
-                <button type="submit" class="btn btn-primary btn-block">Add Task</button>
-            </form>
-        </div>
-    </div>
-
-    <!-- Task Detail & Comment Modal -->
-    <div class="modal-overlay" id="task-detail-modal">
-        <div class="modal-card modal-lg">
-            <button class="modal-close" onclick="closeModal('task-detail-modal')">&times;</button>
-            <div id="task-detail-content"></div>
-        </div>
-    </div>
-
-    <!-- Auth Modal -->
-    <div class="modal-overlay" id="auth-modal">
-        <div class="modal-card">
-            <div class="modal-header">
-                <h3 id="auth-title">Welcome to TaskFlow</h3>
-            </div>
-            <form id="auth-form" onsubmit="handleAuth(event)">
-                <div class="input-group">
-                    <label>Username</label>
-                    <input type="text" id="auth-username" required>
-                </div>
-                <div class="input-group">
-                    <label>Password</label>
-                    <input type="password" id="auth-password" required>
-                </div>
-                <button type="submit" id="auth-submit-btn" class="btn btn-primary btn-block">Log In</button>
-            </form>
-            <div class="modal-footer">
-                <a href="#" id="auth-toggle-btn" onclick="toggleAuthMode()">New user? Register</a>
-            </div>
-        </div>
-    </div>
-
-    <div id="toast-container"></div>
 
     <script src="/socket.io/socket.io.js"></script>
     <script src="app.js"></script>

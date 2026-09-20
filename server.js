@@ -1,162 +1,181 @@
 const express = require('express');
 const http = require('http');
-const { Server } = require('socket.io');
+const path = require('path');
 const mongoose = require('mongoose');
-const session = require('express-session');
-const bcrypt = require('bcryptjs');
+const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
+// Middleware
 app.use(express.json());
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'public')));
 
-app.use(session({
-    secret: 'codealpha_taskflow_secret_2026',
-    resave: false,
-    saveUninitialized: false,
-    cookie: { maxAge: 24 * 60 * 60 * 1000 }
-}));
+// --- MONGODB CONNECTION ---
+// Replace with your MongoDB connection string
+const MONGO_URI = 'mongodb+srv://admin:password123@cluster0.abcde.mongodb.net/taskflow_db?retryWrites=true&w=majority';
 
-// Connect to MongoDB Atlas (Reuse your existing Mongo URI)
-const MONGO_URI = 'mongodb+srv://dstarlord07_db_user:59PshFBHMLUHiOiS@cluster0.rrrupsd.mongodb.net/?appName=Cluster0';
+mongoose.connect(MONGO_URI, {
+    serverSelectionTimeoutMS: 5000
+})
+.then(() => console.log('TaskFlow Connected to MongoDB Atlas'))
+.catch(err => console.error('MongoDB Error:', err));
 
-mongoose.connect(MONGO_URI)
-    .then(() => console.log('TaskFlow Connected to MongoDB Atlas'))
-    .catch(err => console.error('MongoDB Error:', err));
-
-// Schemas
-const User = mongoose.model('User', new mongoose.Schema({
+// --- SCHEMAS & MODELS ---
+const userSchema = new mongoose.Schema({
     username: { type: String, required: true, unique: true },
-    password: { type: String, required: true }
-}));
-
-const Project = mongoose.model('Project', new mongoose.Schema({
-    title: { type: String, required: true },
-    owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    members: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
-}));
-
-const Task = mongoose.model('Task', new mongoose.Schema({
-    project: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true },
-    title: { type: String, required: true },
-    status: { type: String, enum: ['todo', 'in_progress', 'done'], default: 'todo' },
-    assignee: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    comments: [{
-        user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-        username: String,
-        text: String,
-        createdAt: { type: Date, default: Date.now }
-    }]
-}));
-
-function requireAuth(req, res, next) {
-    if (!req.session.userId) return res.status(401).json({ error: 'Auth required' });
-    next();
-}
-
-// Socket.io Room Joining
-io.on('connection', (socket) => {
-    socket.on('join_project', (projectId) => {
-        socket.join(projectId);
-    });
+    email:    { type: String, required: true, unique: true }
 });
+const User = mongoose.model('User', userSchema);
 
-// Auth Routes
-app.post('/api/register', async (req, res) => {
+const taskSchema = new mongoose.Schema({
+    title:       { type: String, required: true },
+    description: { type: String },
+    status:      { type: String, enum: ['To Do', 'In Progress', 'Done'], default: 'To Do' },
+    assignedTo:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    project:     { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true }
+}, { timestamps: true });
+const Task = mongoose.model('Task', taskSchema);
+
+const projectSchema = new mongoose.Schema({
+    name:        { type: String, required: true },
+    description: { type: String },
+    createdBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    members:     [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
+}, { timestamps: true });
+const Project = mongoose.model('Project', projectSchema);
+
+
+// --- API ROUTES ---
+
+// 1. Register User
+app.post('/api/users/register', async (req, res) => {
     try {
-        const { username, password } = req.body;
-        const hashedPassword = await bcrypt.hash(password, 10);
-        const user = new User({ username, password: hashedPassword });
-        await user.save();
-        req.session.userId = user._id;
-        res.status(201).json(user);
+        const { username, email } = req.body;
+        let user = await User.findOne({ email });
+        if (!user) {
+            user = await User.create({ username, email });
+        }
+        res.json(user);
     } catch (err) {
-        res.status(400).json({ error: 'Username taken' });
+        res.status(500).json({ error: 'User registration failed' });
     }
 });
 
-app.post('/api/login', async (req, res) => {
-    const { username, password } = req.body;
-    const user = await User.findOne({ username });
-    if (user && await bcrypt.compare(password, user.password)) {
-        req.session.userId = user._id;
-        return res.json(user);
+// 2. Get All Registered Users
+app.get('/api/users', async (req, res) => {
+    try {
+        const users = await User.find({}, '_id username email');
+        res.json(users);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch users' });
     }
-    res.status(400).json({ error: 'Invalid credentials' });
 });
 
-app.post('/api/logout', (req, res) => {
-    req.session.destroy();
-    res.json({ message: 'Logged out' });
+// 3. Get All Projects
+app.get('/api/projects', async (req, res) => {
+    try {
+        const projects = await Project.find()
+            .populate('members', 'username email')
+            .populate('createdBy', 'username');
+        res.json(projects);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch projects' });
+    }
 });
 
-app.get('/api/session', async (req, res) => {
-    if (!req.session.userId) return res.json({ loggedIn: false });
-    const user = await User.findById(req.session.userId).select('-password');
-    res.json({ loggedIn: true, user });
+// 4. Create Project
+app.post('/api/projects', async (req, res) => {
+    try {
+        const { name, description, userId } = req.body;
+        const project = await Project.create({
+            name,
+            description,
+            createdBy: userId,
+            members: [userId]
+        });
+        const populated = await project.populate('members createdBy', 'username email');
+        
+        io.emit('project:created', populated);
+        res.json(populated);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to create project' });
+    }
 });
 
-// Project Routes
-app.get('/api/projects', requireAuth, async (req, res) => {
-    const projects = await Project.find({ members: req.session.userId });
-    res.json(projects);
+// 5. Add Member to Project
+app.post('/api/projects/:projectId/members', async (req, res) => {
+    try {
+        const { userId } = req.body;
+        const project = await Project.findByIdAndUpdate(
+            req.params.projectId,
+            { $addToSet: { members: userId } },
+            { new: true }
+        ).populate('members createdBy', 'username email');
+
+        io.emit('project:updated', project);
+        res.json(project);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to add member' });
+    }
 });
 
-app.post('/api/projects', requireAuth, async (req, res) => {
-    const project = new Project({
-        title: req.body.title,
-        owner: req.session.userId,
-        members: [req.session.userId]
-    });
-    await project.save();
-    res.status(201).json(project);
+// 6. Get Tasks for a Project
+app.get('/api/projects/:projectId/tasks', async (req, res) => {
+    try {
+        const tasks = await Task.find({ project: req.params.projectId })
+            .populate('assignedTo', 'username');
+        res.json(tasks);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch tasks' });
+    }
 });
 
-app.get('/api/projects/:id', requireAuth, async (req, res) => {
-    const project = await Project.findById(req.params.id).populate('members', 'username');
-    res.json(project);
+// 7. Create Task
+app.post('/api/tasks', async (req, res) => {
+    try {
+        const { title, description, projectId, assignedTo } = req.body;
+        const task = await Task.create({
+            title,
+            description,
+            project: projectId,
+            assignedTo: assignedTo || null
+        });
+        const populated = await task.populate('assignedTo', 'username');
+
+        io.emit('task:created', populated);
+        res.json(populated);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to create task' });
+    }
 });
 
-// Task Routes
-app.get('/api/projects/:id/tasks', requireAuth, async (req, res) => {
-    const tasks = await Task.find({ project: req.params.id }).populate('assignee', 'username');
-    res.json(tasks);
+// 8. Update Task Status (Drag/Move)
+app.patch('/api/tasks/:taskId', async (req, res) => {
+    try {
+        const { status } = req.body;
+        const task = await Task.findByIdAndUpdate(
+            req.params.taskId,
+            { status },
+            { new: true }
+        ).populate('assignedTo', 'username');
+
+        io.emit('task:updated', task);
+        res.json(task);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to update task' });
+    }
 });
 
-app.post('/api/tasks', requireAuth, async (req, res) => {
-    const { projectId, title, status, assignee } = req.body;
-    const task = new Task({ project: projectId, title, status, assignee: assignee || null });
-    await task.save();
-
-    io.to(projectId).emit('task_updated', { projectId, action: 'created' });
-    res.status(201).json(task);
+// --- SOCKET.IO CONNECTION ---
+io.on('connection', (socket) => {
+    console.log('⚡ Client connected:', socket.id);
+    socket.on('disconnect', () => console.log('❌ Client disconnected:', socket.id));
 });
 
-app.get('/api/tasks/:id', requireAuth, async (req, res) => {
-    const task = await Task.findById(req.params.id);
-    res.json(task);
+// --- START SERVER ---
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`TaskFlow Server running on http://localhost:${PORT}`);
 });
-
-app.put('/api/tasks/:id/status', requireAuth, async (req, res) => {
-    const task = await Task.findById(req.params.id);
-    task.status = req.body.status;
-    await task.save();
-
-    io.to(task.project.toString()).emit('task_updated', { projectId: task.project, action: 'status moved' });
-    res.json(task);
-});
-
-app.post('/api/tasks/:id/comments', requireAuth, async (req, res) => {
-    const task = await Task.findById(req.params.id);
-    const user = await User.findById(req.session.userId);
-    task.comments.push({ user: user._id, username: user.username, text: req.body.text });
-    await task.save();
-
-    io.to(task.project.toString()).emit('task_updated', { projectId: task.project, action: 'comment added' });
-    res.json(task);
-});
-
-const PORT = 3000;
-server.listen(PORT, () => console.log(`TaskFlow Server running on http://localhost:${PORT}`));
