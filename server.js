@@ -2,180 +2,262 @@ const express = require('express');
 const http = require('http');
 const path = require('path');
 const mongoose = require('mongoose');
+const session = require('express-session');
+const bcrypt = require('bcryptjs');
 const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-// Middleware
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- MONGODB CONNECTION ---
-// Replace with your MongoDB connection string
-const MONGO_URI = 'mongodb+srv://admin:password123@cluster0.abcde.mongodb.net/taskflow_db?retryWrites=true&w=majority';
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'codealpha_taskflow_secure_key',
+    resave: false,
+    saveUninitialized: false,
+    cookie: { maxAge: 24 * 60 * 60 * 1000 }
+}));
 
-mongoose.connect(MONGO_URI, {
-    serverSelectionTimeoutMS: 5000
-})
-.then(() => console.log('TaskFlow Connected to MongoDB Atlas'))
-.catch(err => console.error('MongoDB Error:', err));
+const MONGO_URI = process.env.MONGO_URI || 'mongodb+srv://dstarlord07_db_user:iLpI3i76CAzicQjn@cluster0.rrrupsd.mongodb.net/?appName=Cluster0';
+mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 5000 })
+    .then(() => console.log('⚡ TaskFlow Connected to MongoDB'))
+    .catch(err => console.error('❌ MongoDB Connection Error:', err));
 
-// --- SCHEMAS & MODELS ---
+// --- SCHEMAS ---
 const userSchema = new mongoose.Schema({
     username: { type: String, required: true, unique: true },
-    email:    { type: String, required: true, unique: true }
-});
+    email:    { type: String, required: true, unique: true },
+    password: { type: String, required: true }
+}, { timestamps: true });
 const User = mongoose.model('User', userSchema);
+
+const notificationSchema = new mongoose.Schema({
+    recipient: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    sender:    { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    message:   { type: String, required: true },
+    read:      { type: Boolean, default: false }
+}, { timestamps: true });
+const Notification = mongoose.model('Notification', notificationSchema);
+
+const commentSchema = new mongoose.Schema({
+    author:   { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    username: { type: String, required: true },
+    text:     { type: String, required: true }
+}, { timestamps: true });
 
 const taskSchema = new mongoose.Schema({
     title:       { type: String, required: true },
     description: { type: String },
-    status:      { type: String, enum: ['To Do', 'In Progress', 'Done'], default: 'To Do' },
-    assignedTo:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    project:     { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true }
+    status:      { type: String, enum: ['todo', 'in_progress', 'done'], default: 'todo' },
+    assignee:    { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    project:     { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true },
+    comments:    [commentSchema]
 }, { timestamps: true });
 const Task = mongoose.model('Task', taskSchema);
 
 const projectSchema = new mongoose.Schema({
-    name:        { type: String, required: true },
+    title:       { type: String, required: true },
     description: { type: String },
     createdBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     members:     [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
 }, { timestamps: true });
 const Project = mongoose.model('Project', projectSchema);
 
+function requireAuth(req, res, next) {
+    if (!req.session.userId) return res.status(401).json({ error: 'Unauthorized access.' });
+    next();
+}
+
+// Helper to send real-time notification
+async function createAndSendNotification(recipientId, senderId, message) {
+    if (!recipientId) return;
+    const notif = await Notification.create({ recipient: recipientId, sender: senderId, message });
+    io.to(recipientId.toString()).emit('new_notification', notif);
+}
 
 // --- API ROUTES ---
 
-// 1. Register User
-app.post('/api/users/register', async (req, res) => {
+// Registration & Login
+app.post('/api/register', async (req, res) => {
     try {
-        const { username, email } = req.body;
-        let user = await User.findOne({ email });
-        if (!user) {
-            user = await User.create({ username, email });
-        }
-        res.json(user);
+        const { username, password } = req.body;
+        const email = req.body.email || `${username}@taskflow.local`;
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const user = await User.create({ username, email, password: hashedPassword });
+        req.session.userId = user._id;
+        res.status(201).json({ _id: user._id, username: user.username, email: user.email });
     } catch (err) {
         res.status(500).json({ error: 'User registration failed' });
     }
 });
 
-// 2. Get All Registered Users
-app.get('/api/users', async (req, res) => {
+app.post('/api/login', async (req, res) => {
     try {
-        const users = await User.find({}, '_id username email');
-        res.json(users);
+        const { username, password } = req.body;
+        const user = await User.findOne({ username });
+        if (!user || !(await bcrypt.compare(password, user.password))) {
+            return res.status(400).json({ error: 'Invalid credentials' });
+        }
+        req.session.userId = user._id;
+        res.json({ _id: user._id, username: user.username, email: user.email });
     } catch (err) {
-        res.status(500).json({ error: 'Failed to fetch users' });
+        res.status(500).json({ error: 'Login failed' });
     }
 });
 
-// 3. Get All Projects
-app.get('/api/projects', async (req, res) => {
+app.get('/api/session', async (req, res) => {
+    if (!req.session.userId) return res.json({ loggedIn: false });
+    const user = await User.findById(req.session.userId).select('-password');
+    res.json({ loggedIn: true, user });
+});
+
+app.post('/api/logout', (req, res) => {
+    req.session.destroy();
+    res.json({ message: 'Logged out' });
+});
+
+// Notifications
+app.get('/api/notifications', requireAuth, async (req, res) => {
+    const notifs = await Notification.find({ recipient: req.session.userId }).sort({ createdAt: -1 });
+    res.json(notifs);
+});
+
+app.put('/api/notifications/read', requireAuth, async (req, res) => {
+    await Notification.updateMany({ recipient: req.session.userId, read: false }, { read: true });
+    res.json({ success: true });
+});
+
+// Projects & Inviting Members
+app.get('/api/projects', requireAuth, async (req, res) => {
+    const projects = await Project.find({ members: req.session.userId })
+        .populate('members', 'username email')
+        .populate('createdBy', 'username');
+    res.json(projects);
+});
+
+app.get('/api/projects/:id', requireAuth, async (req, res) => {
+    const project = await Project.findById(req.params.id).populate('members', 'username email');
+    res.json(project);
+});
+
+app.post('/api/projects', requireAuth, async (req, res) => {
+    const project = await Project.create({
+        title: req.body.title,
+        createdBy: req.session.userId,
+        members: [req.session.userId]
+    });
+    res.status(201).json(await project.populate('members createdBy', 'username email'));
+});
+
+// Invite member by username
+app.post('/api/projects/:projectId/invite', requireAuth, async (req, res) => {
     try {
-        const projects = await Project.find()
-            .populate('members', 'username email')
-            .populate('createdBy', 'username');
-        res.json(projects);
+        const { username } = req.body;
+        const userToInvite = await User.findOne({ username });
+        if (!userToInvite) return res.status(404).json({ error: 'User not found' });
+
+        const project = await Project.findById(req.params.projectId);
+        if (project.members.includes(userToInvite._id)) {
+            return res.status(400).json({ error: 'User already in project' });
+        }
+
+        project.members.push(userToInvite._id);
+        await project.save();
+
+        const currentUser = await User.findById(req.session.userId);
+        await createAndSendNotification(
+            userToInvite._id,
+            req.session.userId,
+            `${currentUser.username} invited you to project "${project.title}"`
+        );
+
+        res.json(await project.populate('members', 'username email'));
     } catch (err) {
-        res.status(500).json({ error: 'Failed to fetch projects' });
+        res.status(500).json({ error: 'Failed to invite member' });
     }
 });
 
-// 4. Create Project
-app.post('/api/projects', async (req, res) => {
+// Tasks & Assignee Updates
+app.get('/api/projects/:projectId/tasks', requireAuth, async (req, res) => {
+    const tasks = await Task.find({ project: req.params.projectId }).populate('assignee', 'username');
+    res.json(tasks);
+});
+
+app.get('/api/tasks/:id', requireAuth, async (req, res) => {
+    const task = await Task.findById(req.params.id).populate('assignee', 'username');
+    res.json(task);
+});
+
+app.post('/api/tasks', requireAuth, async (req, res) => {
+    const { title, projectId, status, assignee } = req.body;
+    const task = await Task.create({
+        title,
+        status: status || 'todo',
+        project: projectId,
+        assignee: assignee || null
+    });
+
+    if (assignee) {
+        const currentUser = await User.findById(req.session.userId);
+        await createAndSendNotification(
+            assignee,
+            req.session.userId,
+            `${currentUser.username} assigned you a task: "${title}"`
+        );
+    }
+
+    io.to(projectId).emit('task_updated', { projectId, action: 'created' });
+    res.status(201).json(await task.populate('assignee', 'username'));
+});
+
+// Update Task (Status + Edit Assignee)
+app.put('/api/tasks/:taskId', requireAuth, async (req, res) => {
     try {
-        const { name, description, userId } = req.body;
-        const project = await Project.create({
-            name,
-            description,
-            createdBy: userId,
-            members: [userId]
-        });
-        const populated = await project.populate('members createdBy', 'username email');
+        const { status, assignee } = req.body;
+        const oldTask = await Task.findById(req.params.taskId);
         
-        io.emit('project:created', populated);
-        res.json(populated);
-    } catch (err) {
-        res.status(500).json({ error: 'Failed to create project' });
-    }
-});
+        const updateData = {};
+        if (status) updateData.status = status;
+        if (assignee !== undefined) updateData.assignee = assignee || null;
 
-// 5. Add Member to Project
-app.post('/api/projects/:projectId/members', async (req, res) => {
-    try {
-        const { userId } = req.body;
-        const project = await Project.findByIdAndUpdate(
-            req.params.projectId,
-            { $addToSet: { members: userId } },
-            { new: true }
-        ).populate('members createdBy', 'username email');
+        const updatedTask = await Task.findByIdAndUpdate(req.params.taskId, updateData, { new: true })
+            .populate('assignee', 'username');
 
-        io.emit('project:updated', project);
-        res.json(project);
-    } catch (err) {
-        res.status(500).json({ error: 'Failed to add member' });
-    }
-});
+        // Notify if assignee changed
+        if (assignee && String(oldTask.assignee) !== String(assignee)) {
+            const currentUser = await User.findById(req.session.userId);
+            await createAndSendNotification(
+                assignee,
+                req.session.userId,
+                `${currentUser.username} assigned you to task: "${updatedTask.title}"`
+            );
+        }
 
-// 6. Get Tasks for a Project
-app.get('/api/projects/:projectId/tasks', async (req, res) => {
-    try {
-        const tasks = await Task.find({ project: req.params.projectId })
-            .populate('assignedTo', 'username');
-        res.json(tasks);
-    } catch (err) {
-        res.status(500).json({ error: 'Failed to fetch tasks' });
-    }
-});
-
-// 7. Create Task
-app.post('/api/tasks', async (req, res) => {
-    try {
-        const { title, description, projectId, assignedTo } = req.body;
-        const task = await Task.create({
-            title,
-            description,
-            project: projectId,
-            assignedTo: assignedTo || null
-        });
-        const populated = await task.populate('assignedTo', 'username');
-
-        io.emit('task:created', populated);
-        res.json(populated);
-    } catch (err) {
-        res.status(500).json({ error: 'Failed to create task' });
-    }
-});
-
-// 8. Update Task Status (Drag/Move)
-app.patch('/api/tasks/:taskId', async (req, res) => {
-    try {
-        const { status } = req.body;
-        const task = await Task.findByIdAndUpdate(
-            req.params.taskId,
-            { status },
-            { new: true }
-        ).populate('assignedTo', 'username');
-
-        io.emit('task:updated', task);
-        res.json(task);
+        io.to(updatedTask.project.toString()).emit('task_updated', { projectId: updatedTask.project, action: 'updated' });
+        res.json(updatedTask);
     } catch (err) {
         res.status(500).json({ error: 'Failed to update task' });
     }
 });
 
-// --- SOCKET.IO CONNECTION ---
-io.on('connection', (socket) => {
-    console.log('⚡ Client connected:', socket.id);
-    socket.on('disconnect', () => console.log('❌ Client disconnected:', socket.id));
+app.post('/api/tasks/:taskId/comments', requireAuth, async (req, res) => {
+    const user = await User.findById(req.session.userId);
+    const task = await Task.findById(req.params.taskId);
+
+    task.comments.push({ author: user._id, username: user.username, text: req.body.text });
+    await task.save();
+
+    io.to(task.project.toString()).emit('task_updated', { projectId: task.project, action: 'commented' });
+    res.json(task);
 });
 
-// --- START SERVER ---
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`TaskFlow Server running on http://localhost:${PORT}`);
+// Socket Rooms
+io.on('connection', (socket) => {
+    socket.on('user_login', (userId) => socket.join(userId));
+    socket.on('join_project', (projectId) => socket.join(projectId));
 });
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`🚀 TaskFlow running on http://localhost:${PORT}`));
