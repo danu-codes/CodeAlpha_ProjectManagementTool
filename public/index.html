@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,6 +8,7 @@
     <link rel="stylesheet" href="styles.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
+
 <body>
     <header class="navbar">
         <div class="nav-container">
@@ -35,30 +37,41 @@
                     <h2 id="current-project-title">Select or Create a Project</h2>
                     <div id="project-members" class="members-pills" style="margin-top: 0.5rem;"></div>
                 </div>
-                <button id="btn-invite-member" class="btn btn-sm btn-primary" style="display:none;" onclick="openModal('invite-member-modal')">
-                    <i class="fa-solid fa-user-plus"></i> Invite Member
-                </button>
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <button id="btn-invite-member" class="btn btn-sm btn-primary" style="display:none;"
+                        onclick="openModal('invite-member-modal')">
+                        <i class="fa-solid fa-user-plus"></i> Invite Member
+                    </button>
+                    <!-- Delete Project Button (Hidden by default, shown only to owner) -->
+                    <button id="btn-delete-project" class="btn btn-sm"
+                        style="display:none; background:#ef4444; color:white;" onclick="handleDeleteProject()">
+                        <i class="fa-solid fa-trash"></i> Delete Project
+                    </button>
+                </div>
             </div>
 
             <div class="kanban-board" id="kanban-board" style="display: none;">
                 <div class="kanban-column">
                     <div class="column-header todo">
                         <span><i class="fa-regular fa-circle"></i> To Do</span>
-                        <button class="icon-btn" onclick="openCreateTaskModal('todo')"><i class="fa-solid fa-plus"></i></button>
+                        <button class="icon-btn" onclick="openCreateTaskModal('todo')"><i
+                                class="fa-solid fa-plus"></i></button>
                     </div>
                     <div class="task-list" id="col-todo"></div>
                 </div>
                 <div class="kanban-column">
                     <div class="column-header progress">
                         <span><i class="fa-solid fa-spinner"></i> In Progress</span>
-                        <button class="icon-btn" onclick="openCreateTaskModal('in_progress')"><i class="fa-solid fa-plus"></i></button>
+                        <button class="icon-btn" onclick="openCreateTaskModal('in_progress')"><i
+                                class="fa-solid fa-plus"></i></button>
                     </div>
                     <div class="task-list" id="col-in_progress"></div>
                 </div>
                 <div class="kanban-column">
                     <div class="column-header done">
                         <span><i class="fa-regular fa-circle-check"></i> Done</span>
-                        <button class="icon-btn" onclick="openCreateTaskModal('done')"><i class="fa-solid fa-plus"></i></button>
+                        <button class="icon-btn" onclick="openCreateTaskModal('done')"><i
+                                class="fa-solid fa-plus"></i></button>
                     </div>
                     <div class="task-list" id="col-done"></div>
                 </div>
@@ -149,4 +162,5 @@
     <script src="/socket.io/socket.io.js"></script>
     <script src="app.js"></script>
 </body>
+
 </html>

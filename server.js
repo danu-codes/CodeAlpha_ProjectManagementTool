@@ -253,6 +253,52 @@ app.post('/api/tasks/:taskId/comments', requireAuth, async (req, res) => {
     res.json(task);
 });
 
+// --- DELETE PROJECT (Only project creator) ---
+app.delete('/api/projects/:projectId', requireAuth, async (req, res) => {
+    try {
+        const project = await Project.findById(req.params.projectId);
+        if (!project) return res.status(404).json({ error: 'Project not found' });
+
+        // Authorization check: Only creator can delete
+        if (project.createdBy.toString() !== req.session.userId) {
+            return res.status(403).json({ error: 'Access denied: Only the project creator can delete this project.' });
+        }
+
+        // Delete all associated tasks first, then delete the project
+        await Task.deleteMany({ project: project._id });
+        await Project.findByIdAndDelete(project._id);
+
+        io.to(project._id.toString()).emit('project_deleted', { projectId: project._id });
+        res.json({ message: 'Project and associated tasks deleted successfully' });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to delete project' });
+    }
+});
+
+// --- DELETE TASK (Only project creator) ---
+app.delete('/api/tasks/:taskId', requireAuth, async (req, res) => {
+    try {
+        const task = await Task.findById(req.params.taskId);
+        if (!task) return res.status(404).json({ error: 'Task not found' });
+
+        // Fetch project to verify creator ownership
+        const project = await Project.findById(task.project);
+        if (!project) return res.status(404).json({ error: 'Associated project not found' });
+
+        // Authorization check: Only project creator can delete tasks
+        if (project.createdBy.toString() !== req.session.userId) {
+            return res.status(403).json({ error: 'Access denied: Only the project creator can delete tasks.' });
+        }
+
+        await Task.findByIdAndDelete(req.params.taskId);
+
+        io.to(project._id.toString()).emit('task_updated', { projectId: project._id, action: 'deleted' });
+        res.json({ message: 'Task deleted successfully' });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to delete task' });
+    }
+});
+
 // Socket Rooms
 io.on('connection', (socket) => {
     socket.on('user_login', (userId) => socket.join(userId));

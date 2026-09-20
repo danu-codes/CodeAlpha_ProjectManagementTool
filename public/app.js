@@ -7,6 +7,8 @@ document.addEventListener('DOMContentLoaded', () => {
     checkSession();
 });
 
+// --- REAL-TIME SOCKET LISTENERS ---
+
 socket.on('task_updated', (data) => {
     if (currentProject && currentProject._id === data.projectId) {
         loadBoard(data.projectId);
@@ -18,34 +20,82 @@ socket.on('new_notification', (notif) => {
     loadNotifications();
 });
 
-async function checkSession() {
-    const res = await fetch('/api/session');
-    const data = await res.json();
-    const navActions = document.getElementById('nav-actions');
-
-    if (data.loggedIn) {
-        currentUser = data.user;
-        socket.emit('user_login', currentUser._id);
-
-        navActions.innerHTML = `
-            <div style="position:relative;">
-                <button class="btn btn-sm" onclick="toggleNotifDropdown()">
-                    <i class="fa-solid fa-bell"></i>
-                    <span id="notif-badge" style="background:red; color:white; border-radius:50%; padding:2px 6px; font-size:0.7rem; display:none;"></span>
-                </button>
-                <div id="notif-dropdown" style="display:none; position:absolute; right:0; top:35px; background:white; border:1px solid #ccc; width:280px; max-height:300px; overflow-y:auto; box-shadow:0 4px 6px rgba(0,0,0,0.1); z-index:100; border-radius:6px; padding:0.5rem;"></div>
-            </div>
-            <span><i class="fa-solid fa-user"></i> ${currentUser.username}</span>
-            <button class="btn btn-primary btn-sm" onclick="logout()">Logout</button>
-        `;
-
-        closeModal('auth-modal');
+socket.on('project_deleted', (data) => {
+    if (currentProject && currentProject._id === data.projectId) {
+        currentProject = null;
+        document.getElementById('kanban-board').style.display = 'none';
+        document.getElementById('btn-invite-member').style.display = 'none';
+        document.getElementById('btn-delete-project').style.display = 'none';
+        document.getElementById('current-project-title').innerText = 'Select or Create a Project';
+        document.getElementById('project-members').innerHTML = '';
+        showToast('This project was deleted by the owner.');
         loadProjects();
-        loadNotifications();
-    } else {
-        openModal('auth-modal');
+    }
+});
+
+// --- AUTH & SESSION ---
+
+async function checkSession() {
+    try {
+        const res = await fetch('/api/session');
+        const data = await res.json();
+        const navActions = document.getElementById('nav-actions');
+
+        if (data.loggedIn) {
+            currentUser = data.user;
+            socket.emit('user_login', currentUser._id);
+
+            navActions.innerHTML = `
+                <div style="position:relative;">
+                    <button class="btn btn-sm" onclick="toggleNotifDropdown()">
+                        <i class="fa-solid fa-bell"></i>
+                        <span id="notif-badge" style="background:red; color:white; border-radius:50%; padding:2px 6px; font-size:0.7rem; display:none;"></span>
+                    </button>
+                    <div id="notif-dropdown" style="display:none; position:absolute; right:0; top:35px; background:white; border:1px solid #ccc; width:280px; max-height:300px; overflow-y:auto; box-shadow:0 4px 6px rgba(0,0,0,0.1); z-index:100; border-radius:6px; padding:0.5rem;"></div>
+                </div>
+                <span><i class="fa-solid fa-user"></i> ${currentUser.username}</span>
+                <button class="btn btn-primary btn-sm" onclick="logout()">Logout</button>
+            `;
+
+            closeModal('auth-modal');
+            loadProjects();
+            loadNotifications();
+        } else {
+            openModal('auth-modal');
+        }
+    } catch (err) {
+        showToast('Failed to verify session');
     }
 }
+
+function toggleAuthMode() {
+    isRegisterMode = !isRegisterMode;
+    document.getElementById('auth-title').innerText = isRegisterMode ? 'Register' : 'Welcome';
+    document.getElementById('auth-submit-btn').innerText = isRegisterMode ? 'Sign Up' : 'Log In';
+}
+
+async function handleAuth(e) {
+    e.preventDefault();
+    const username = document.getElementById('auth-username').value;
+    const password = document.getElementById('auth-password').value;
+    const endpoint = isRegisterMode ? '/api/register' : '/api/login';
+
+    const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+    });
+
+    if (res.ok) checkSession();
+    else showToast((await res.json()).error);
+}
+
+async function logout() {
+    await fetch('/api/logout', { method: 'POST' });
+    location.reload();
+}
+
+// --- NOTIFICATIONS ---
 
 async function loadNotifications() {
     const res = await fetch('/api/notifications');
@@ -79,6 +129,8 @@ async function toggleNotifDropdown() {
     }
 }
 
+// --- PROJECTS ---
+
 async function loadProjects() {
     const res = await fetch('/api/projects');
     const projects = await res.json();
@@ -103,17 +155,67 @@ async function selectProject(id) {
     document.getElementById('kanban-board').style.display = 'grid';
     document.getElementById('btn-invite-member').style.display = 'inline-block';
 
+    // Verify Project Ownership
+    const ownerId = currentProject.createdBy?._id || currentProject.createdBy;
+    const isOwner = String(ownerId) === String(currentUser._id);
+    document.getElementById('btn-delete-project').style.display = isOwner ? 'inline-block' : 'none';
+
     // Render Member Pills
     const membersPills = document.getElementById('project-members');
-    membersPills.innerHTML = currentProject.members.map(m => `
+    membersPills.innerHTML = (currentProject.members || []).map(m => `
         <span style="background:#e0e0e0; padding:2px 8px; border-radius:12px; font-size:0.8rem; margin-right:4px;">
-            <i class="fa-solid fa-user"></i> ${m.username}
+            <i class="fa-solid fa-user"></i> ${m.username || 'User'}
         </span>
     `).join('');
 
+    // Highlight active sidebar item
+    document.querySelectorAll('.project-item').forEach(el => {
+        el.classList.toggle('active', el.getAttribute('onclick')?.includes(id));
+    });
+
     socket.emit('join_project', currentProject._id);
-    loadProjects();
     loadBoard(id);
+}
+
+async function handleCreateProject(e) {
+    e.preventDefault();
+    const title = document.getElementById('project-name-input').value;
+    const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title })
+    });
+    const newProj = await res.json();
+    closeModal('create-project-modal');
+    document.getElementById('project-name-input').value = '';
+    await loadProjects();
+    selectProject(newProj._id);
+}
+
+async function handleDeleteProject() {
+    if (!currentProject) return;
+    if (!confirm(`Are you sure you want to delete "${currentProject.title}" and all its tasks?`)) return;
+
+    const res = await fetch(`/api/projects/${currentProject._id}`, {
+        method: 'DELETE'
+    });
+
+    if (res.ok) {
+        showToast('Project deleted successfully');
+        const deletedId = currentProject._id;
+        currentProject = null;
+        
+        document.getElementById('kanban-board').style.display = 'none';
+        document.getElementById('btn-invite-member').style.display = 'none';
+        document.getElementById('btn-delete-project').style.display = 'none';
+        document.getElementById('current-project-title').innerText = 'Select or Create a Project';
+        document.getElementById('project-members').innerHTML = '';
+
+        await loadProjects();
+    } else {
+        const err = await res.json();
+        showToast(err.error || 'Failed to delete project');
+    }
 }
 
 async function handleInviteMember(e) {
@@ -136,6 +238,8 @@ async function handleInviteMember(e) {
         showToast(err.error || 'Failed to invite user');
     }
 }
+
+// --- KANBAN BOARD & TASKS ---
 
 async function loadBoard(projectId) {
     const res = await fetch(`/api/projects/${projectId}/tasks`);
@@ -187,6 +291,9 @@ async function openTaskDetail(taskId) {
     const res = await fetch(`/api/tasks/${taskId}`);
     const task = await res.json();
 
+    const ownerId = currentProject.createdBy?._id || currentProject.createdBy;
+    const isOwner = String(ownerId) === String(currentUser._id);
+
     const container = document.getElementById('task-detail-content');
     container.innerHTML = `
         <h3>${task.title}</h3>
@@ -207,6 +314,12 @@ async function openTaskDetail(taskId) {
                 `).join('')}
             </select>
         </div>
+        ${isOwner ? `
+            <hr style="margin: 1rem 0; border: none; border-top: 1px solid var(--border);" />
+            <button class="btn btn-block" style="background:#ef4444; color:white;" onclick="handleDeleteTask('${task._id}')">
+                <i class="fa-solid fa-trash"></i> Delete Task
+            </button>
+        ` : ''}
     `;
     openModal('task-detail-modal');
 }
@@ -225,49 +338,27 @@ async function updateTaskDetails(taskId) {
     loadBoard(currentProject._id);
 }
 
-async function handleCreateProject(e) {
-    e.preventDefault();
-    const title = document.getElementById('project-name-input').value;
-    const res = await fetch('/api/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title })
+async function handleDeleteTask(taskId) {
+    if (!confirm('Are you sure you want to delete this task?')) return;
+
+    const res = await fetch(`/api/tasks/${taskId}`, {
+        method: 'DELETE'
     });
-    const newProj = await res.json();
-    closeModal('create-project-modal');
-    document.getElementById('project-name-input').value = '';
-    selectProject(newProj._id);
+
+    if (res.ok) {
+        showToast('Task deleted successfully');
+        closeModal('task-detail-modal');
+        loadBoard(currentProject._id);
+    } else {
+        const err = await res.json();
+        showToast(err.error || 'Failed to delete task');
+    }
 }
+
+// --- UTILITY FUNCTIONS ---
 
 function openModal(id) { document.getElementById(id).classList.add('active'); }
 function closeModal(id) { document.getElementById(id).classList.remove('active'); }
-
-function toggleAuthMode() {
-    isRegisterMode = !isRegisterMode;
-    document.getElementById('auth-title').innerText = isRegisterMode ? 'Register' : 'Welcome';
-    document.getElementById('auth-submit-btn').innerText = isRegisterMode ? 'Sign Up' : 'Log In';
-}
-
-async function handleAuth(e) {
-    e.preventDefault();
-    const username = document.getElementById('auth-username').value;
-    const password = document.getElementById('auth-password').value;
-    const endpoint = isRegisterMode ? '/api/register' : '/api/login';
-
-    const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
-    });
-
-    if (res.ok) checkSession();
-    else showToast((await res.json()).error);
-}
-
-async function logout() {
-    await fetch('/api/logout', { method: 'POST' });
-    location.reload();
-}
 
 function showToast(msg) {
     const container = document.getElementById('toast-container');
